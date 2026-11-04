@@ -910,7 +910,12 @@ def _edit_is_empty(v):
 
 
 def _win_session(win):
-    return win.Name.rsplit(" - ", 1)[-1].strip()
+    """Session name from a Devin window title. Old builds used
+    'Devin - <session>'; 1.126+ uses '<session> <workspace> - Devin'."""
+    name = (win.Name or "").strip()
+    if name.endswith(" - Devin"):
+        return name[:-len(" - Devin")].strip()
+    return name.rsplit(" - ", 1)[-1].strip()
 
 
 def _name_matches(seen, title, first_msg):
@@ -1179,7 +1184,16 @@ def _restore_anchor(win, anchors):
 _CDP_GUARD_JS = r"""
 (() => {
   const W = window;
-  const find = () => document.querySelector('[aria-label="Session transcript"]')?.closest('.cascade-scrollbar');
+  const find = () => {
+    const t = document.querySelector('[aria-label="Session transcript"]');
+    if (t) return t.closest('.cascade-scrollbar') || t;
+    // 1.126+: no transcript label — the scroller is the nearest scrollable
+    // ancestor of a message group (User message / Devin message)
+    const m = document.querySelector('[aria-label="User message"],[aria-label="Devin message"]');
+    for (let e = m; e; e = e.parentElement)
+      if (e.scrollHeight > e.clientHeight + 50 && e.clientHeight > 200) return e;
+    return null;
+  };
   if (!W.__cbGuard) {
     const d = Object.getOwnPropertyDescriptor(Element.prototype, 'scrollTop');
     const g = W.__cbGuard = { holdUntil: 0, test: false, log: [], nudged: 0, drops: 0 };
@@ -1353,12 +1367,12 @@ def _devin_win_title():
     return ""
 
 
-# Composer send button: "Cancel" (running, empty composer), "Queue"
-# (running, text queued), "Send" (idle — loading/reverting states add the
-# cursor-wait class). "N message(s) queued" appears while items wait.
+# Composer send button: idle "Send"; running "Stop Devin" (old builds:
+# "Cancel" / "Queue"); 1.126+ also offers "Add to queue" while running.
+# "N message(s) queued" appears while items wait.
 _CDP_BUSY_JS = r"""
 (() => {
-  const b = [...document.querySelectorAll('button[aria-label]')].find(e => ['Send','Cancel','Queue'].includes(e.getAttribute('aria-label')) && e.offsetParent);
+  const b = [...document.querySelectorAll('button[aria-label]')].find(e => ['Send','Cancel','Queue','Stop Devin','Add to queue'].includes(e.getAttribute('aria-label')) && e.offsetParent);
   if (!b) return null;
   const t = document.querySelector('[aria-label="Session transcript"]');
   let box = b;
@@ -1385,7 +1399,8 @@ def _cdp_busy(title, first_msg):
             r = _cdp_eval(w.Name, _CDP_BUSY_JS)
             if r is None:
                 return None
-            return (r.get("label") in ("Cancel", "Queue")
+            return (r.get("label") in ("Cancel", "Queue", "Stop Devin",
+                                       "Add to queue")
                     or bool(r.get("wait")) or bool(r.get("queued")))
     return None
 
@@ -1397,7 +1412,7 @@ def _cdp_busy(title, first_msg):
 _CDP_STATE_JS = r"""
 (() => {
   const p = document.querySelector('[aria-label="Prompt"][contenteditable=true]');
-  const b = [...document.querySelectorAll('button[aria-label]')].find(e => ['Send','Cancel','Queue'].includes(e.getAttribute('aria-label')) && e.offsetParent);
+  const b = [...document.querySelectorAll('button[aria-label]')].find(e => ['Send','Cancel','Queue','Stop Devin','Add to queue'].includes(e.getAttribute('aria-label')) && e.offsetParent);
   let text = '';
   if (p) {
     const c = p.cloneNode(true);
@@ -1421,9 +1436,9 @@ _CDP_BOX_JS = r"""
 var __cbP = document.querySelector('[aria-label="Prompt"][contenteditable=true]');
 var __cbBox = null;
 if (__cbP) {
-  const isBtn = e => ['Send','Cancel','Queue'].includes(e.getAttribute('aria-label'));
+  const isBtn = e => ['Send','Cancel','Queue','Stop Devin','Add to queue'].includes(e.getAttribute('aria-label'));
   let b = __cbP;
-  for (let i = 0; i < 14 && b.parentElement; i++) {
+  for (let i = 0; i < 30 && b.parentElement; i++) {
     b = b.parentElement;
     if ([...b.querySelectorAll('button[aria-label]')].some(isBtn)
         && b.querySelector('input[type=file]')) { __cbBox = b; break; }
@@ -1720,7 +1735,7 @@ def _cdp_send_body(c, text, submit):
     st = c.eval(_CDP_STATE_JS)
     if not st or not st.get("found"):
         return False, "cdp: composer not found"
-    if st.get("label") in ("Cancel", "Queue"):
+    if st.get("label") in ("Cancel", "Queue", "Stop Devin", "Add to queue"):
         return False, "cdp: session busy"
     draft = st.get("text") or ""
     # attachments: the heartbeat must not carry the user's composer
