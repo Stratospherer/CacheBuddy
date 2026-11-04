@@ -114,6 +114,7 @@ _spaces_warned = False
 
 _REPLY_CACHE = {}                         # sid -> (last_activity_at, out)
 _DESK_SIDS = (0, None)                    # (read at, sids Desktop shows)
+_ARCH_SIDS = (0, set())                   # (read at, sids archived in Desktop)
 _HELD_SIDS = (0, {})                      # (read at, {sid: holder kind})
 
 
@@ -220,6 +221,9 @@ def list_spaces(state_db=None):
         srows = sdb.execute(
             "SELECT key, value FROM ItemTable WHERE key LIKE"
             " 'windsurf.acp.sessioninfo.session.acp/devin-cli/%'").fetchall()
+        arch = sdb.execute(
+            "SELECT value FROM ItemTable WHERE key=?",
+            ("windsurf.acp.session/archivedSessions",)).fetchone()
         sdb.close()
         r2s = json.loads(r2s[0]) if r2s else {}
         meta = json.loads(meta[0]) if meta else {}
@@ -237,6 +241,16 @@ def list_spaces(state_db=None):
             desk.add(k.rsplit("/", 1)[-1])
         global _DESK_SIDS
         _DESK_SIDS = (time.time(), desk)
+        # archived sessions stay in sessions.db (hidden is Devin CLI's own
+        # flag); Desktop keeps its archive list here, ids as "acp/<prv>/<sid>"
+        try:
+            global _ARCH_SIDS
+            _ARCH_SIDS = (time.time(), {s.rsplit("/", 1)[-1] for s in
+                                        json.loads(arch[0] or "[]")})
+            for sid in [s for s in info if s in _ARCH_SIDS[1]]:
+                info.pop(sid)
+        except ValueError:
+            pass
         for sp, resources in r2s.items():
             sids = [m.group(1) for m in
                     (re.search(r"cascade-acp/devin-cli/([^/?#]+)$", r)
@@ -725,7 +739,10 @@ def scan_warm(now=None):
     except sqlite3.Error:
         return {}
     out = {}
+    arch = _ARCH_SIDS[1]
     for sid, title, la, model in rows:
+        if sid in arch:                   # archived in Desktop
+            continue
         la = (la or 0) // 1000 if (la or 0) > 1e12 else (la or 0)
         if now - la > TTL + 60:           # nothing since: can't be warm
             continue
