@@ -224,6 +224,9 @@ def list_spaces(state_db=None):
         arch = sdb.execute(
             "SELECT value FROM ItemTable WHERE key=?",
             ("windsurf.acp.session/archivedSessions",)).fetchone()
+        anns = sdb.execute(
+            "SELECT value FROM ItemTable WHERE key LIKE"
+            " 'devin.desktopShell.localSessionAnnotations.%'").fetchall()
         sdb.close()
         r2s = json.loads(r2s[0]) if r2s else {}
         meta = json.loads(meta[0]) if meta else {}
@@ -241,13 +244,23 @@ def list_spaces(state_db=None):
             desk.add(k.rsplit("/", 1)[-1])
         global _DESK_SIDS
         _DESK_SIDS = (time.time(), desk)
-        # archived sessions stay in sessions.db (hidden is Devin CLI's own
-        # flag); Desktop keeps its archive list here, ids as "acp/<prv>/<sid>"
+        # sessions the sidebar hides: ids as "acp/<prv>/<sid>" /
+        # "devin-acp/<prv>/<sid>". archivedSessions is the acp-level flag;
+        # localSessionAnnotations is the shell's per-account one (archived),
+        # and its parent links point at legacy-space stub sessions that act
+        # as group headers — hidden too.
         try:
+            gone = {s.rsplit("/", 1)[-1] for s in json.loads(arch[0] or "[]")}
+            for (av,) in anns:
+                for k, a in (json.loads(av) or {}).items():
+                    if a.get("archived"):
+                        gone.add(k.rsplit("/", 1)[-1])
+                    p = a.get("parent")
+                    if p:
+                        gone.add(p.rsplit("/", 1)[-1])
             global _ARCH_SIDS
-            _ARCH_SIDS = (time.time(), {s.rsplit("/", 1)[-1] for s in
-                                        json.loads(arch[0] or "[]")})
-            for sid in [s for s in info if s in _ARCH_SIDS[1]]:
+            _ARCH_SIDS = (time.time(), gone)
+            for sid in [s for s in info if s in gone]:
                 info.pop(sid)
         except ValueError:
             pass
